@@ -1,0 +1,227 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+// Definir as credenciais do Wi-Fi
+const char* ssid = "Renata 2G";
+const char* password = "07122016";
+
+// URL do servidor Go
+const char* rainDataUrl = "https://water7-production.up.railway.app/api/rain-data";
+const char* irrigationDataUrl = "https://water7-production.up.railway.app/api/irrigation-data";
+
+// Pines
+const int temperaturePin = 35;
+const int soilMoisturePin = 34;
+const int potentiometerPin = 32;
+const int greenLEDPin = 12;
+const int redLEDPin = 14;
+const int buzzerPin = 27;
+
+// Variáveis para os dados
+float desiredWaterAmount;
+float temperature;
+float rainData;
+float soilMoisture;
+
+// Funções de pertinência para DesiredWaterAmount
+float lowDesiredWaterAmount(float x) {
+  return trapezoidal(x, 0, 0, 25, 50);
+}
+
+float mediumDesiredWaterAmount(float x) {
+  return trapezoidal(x, 25, 50, 50, 75);
+}
+
+float highDesiredWaterAmount(float x) {
+  return trapezoidal(x, 50, 75, 100, 100);
+}
+
+// Funções de pertinência para Temperature
+float lowTemperature(float x) {
+  return trapezoidal(x, 0, 0, 15, 25);
+}
+
+float mediumTemperature(float x) {
+  return trapezoidal(x, 15, 25, 25, 35);
+}
+
+float highTemperature(float x) {
+  return trapezoidal(x, 25, 35, 50, 50);
+}
+
+// Funções de pertinência para RainData
+float noRainData(float x) {
+  return trapezoidal(x, 0, 0, 10, 30);
+}
+
+float littleRainData(float x) {
+  return trapezoidal(x, 10, 30, 30, 60);
+}
+
+float muchRainData(float x) {
+  return trapezoidal(x, 30, 60, 100, 100);
+}
+
+// Funções de pertinência para SoilMoisture
+float drySoilMoisture(float x) {
+  return trapezoidal(x, 0, 0, 25, 50);
+}
+
+float wetSoilMoisture(float x) {
+  return trapezoidal(x, 25, 50, 50, 75);
+}
+
+float soakedSoilMoisture(float x) {
+  return trapezoidal(x, 50, 75, 100, 100);
+}
+
+float trapezoidal(float x, float a, float b, float c, float d) {
+  return max(min(min((x - a) / (b - a), 1.0f), (d - x) / (d - c)), 0.0f);
+}
+
+float EvaluateFuzzy(float desiredWaterAmount, float temperature, float rainData, float soilMoisture) {
+  // Definir regras
+  float heavyIrrigation = min(min(highDesiredWaterAmount(desiredWaterAmount), noRainData(rainData)), drySoilMoisture(soilMoisture));
+  float mediumIrrigation1 = min(min(mediumDesiredWaterAmount(desiredWaterAmount), littleRainData(rainData)), wetSoilMoisture(soilMoisture));
+  float noIrrigation = min(min(lowDesiredWaterAmount(desiredWaterAmount), muchRainData(rainData)), soakedSoilMoisture(soilMoisture));
+  float mediumIrrigation2 = min(min(highDesiredWaterAmount(desiredWaterAmount), littleRainData(rainData)), wetSoilMoisture(soilMoisture));
+  float heavyIrrigation2 = min(min(mediumDesiredWaterAmount(desiredWaterAmount), noRainData(rainData)), drySoilMoisture(soilMoisture));
+
+  float num = heavyIrrigation * 90 + mediumIrrigation1 * 70 + noIrrigation * 10 + mediumIrrigation2 * 70 + heavyIrrigation2 * 90;
+  float denom = heavyIrrigation + mediumIrrigation1 + noIrrigation + mediumIrrigation2 + heavyIrrigation2;
+
+  if (denom == 0) {
+    return 0;
+  }
+  return num / denom;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configurar pinos
+  pinMode(greenLEDPin, OUTPUT);
+  pinMode(redLEDPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+
+  // Conectar ao Wi-Fi
+  WiFi.begin("Wokwi-GUEST", "", 6);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Conectando ao Wi-Fi...");
+  }
+
+  Serial.println("Conectado ao Wi-Fi");
+}
+
+float getRainData() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(rainDataUrl);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println(httpResponseCode);
+      Serial.println(response);
+
+      // Parse JSON response
+      DynamicJsonDocument doc(1024);
+      deserializeJson(doc, response);
+      float rainData = doc["rainData"];
+      http.end();
+      return rainData;
+    } else {
+      Serial.print("Erro ao obter dados de chuva: ");
+      Serial.println(httpResponseCode);
+      http.end();
+      return -1;
+    }
+  }
+  return -1;
+}
+
+void sendIrrigationData(float irrigationAction, const char* message, const char* sirenSound) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(irrigationDataUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    // Construir o payload JSON
+    String httpRequestData = "{\"desiredWaterAmount\":\"" + String(desiredWaterAmount) + "\",";
+    httpRequestData += "\"temperature\":\"" + String(temperature) + "\",";
+    httpRequestData += "\"rainData\":\"" + String(rainData) + "\",";
+    httpRequestData += "\"soilMoisture\":\"" + String(soilMoisture) + "\",";
+    httpRequestData += "\"irrigationAction\":\"" + String(irrigationAction) + "\",";
+    httpRequestData += "\"message\":\"" + String(message) + "\",";
+    httpRequestData += "\"sirenSound\":\"" + String(sirenSound) + "\"}";
+
+    // Log do payload JSON
+    Serial.print("Enviando dados de irrigação: ");
+    Serial.println(httpRequestData);
+
+    // Enviar o payload via POST
+    int httpResponseCode = http.POST(httpRequestData);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.print("Código de resposta do servidor: ");
+      Serial.println(httpResponseCode);
+      Serial.print("Resposta do servidor: ");
+      Serial.println(response);
+    } else {
+      Serial.print("Erro no envio de dados de irrigação: ");
+      Serial.println(httpResponseCode);
+    }
+
+    http.end();
+  }
+}
+
+void loop() {
+  // Ler dados dos sensores
+    temperature = analogRead(temperaturePin)/100;
+  desiredWaterAmount = analogRead(potentiometerPin)/100;
+  soilMoisture = analogRead(soilMoisturePin)/100;
+  rainData = getRainData();
+
+  // Imprimir os valores lidos no console serial
+  Serial.print("Temperature: ");
+  Serial.println(temperature);
+  Serial.print("Desired Water Amount: ");
+  Serial.println(desiredWaterAmount);
+  Serial.print("Rain Data: ");
+  Serial.println(rainData);
+  Serial.print("Soil Moisture: ");
+  Serial.println(soilMoisture);
+
+  // Calcular ação de irrigação usando lógica fuzzy
+  float irrigationAction = EvaluateFuzzy(desiredWaterAmount, temperature, rainData, soilMoisture);
+
+  // Imprimir a ação de irrigação no console serial
+  Serial.print("Irrigation Action: ");
+  Serial.println(irrigationAction);
+
+  // Acionar LEDs e Buzzer com base na ação de irrigação
+  if (irrigationAction > 70) {
+    digitalWrite(greenLEDPin, HIGH);
+    digitalWrite(redLEDPin, LOW);
+    tone(buzzerPin, 1000); // Tocar o buzzer
+  } else if (irrigationAction > 0) {
+    digitalWrite(greenLEDPin, LOW);
+    digitalWrite(redLEDPin, HIGH);
+    noTone(buzzerPin); // Parar o buzzer
+  } else {
+    digitalWrite(greenLEDPin, LOW);
+    digitalWrite(redLEDPin, LOW);
+    noTone(buzzerPin); // Parar o buzzer
+  }
+
+  // Enviar dados de irrigação para o servidor
+  sendIrrigationData(irrigationAction, "Irrigação realizada com sucesso", "success_siren.mp3");
+
+  // Aguardar antes do próximo ciclo
+  delay(10000);
+}

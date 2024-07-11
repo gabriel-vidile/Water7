@@ -18,6 +18,7 @@ var (
 type IrrigationData struct {
 	DesiredWaterAmount float64 `json:"desiredWaterAmount"`
 	RainData           float64 `json:"rainData"`
+	Temperature        float64 `json:"temperature"`
 	SoilMoisture       float64 `json:"soilMoisture"`
 	IrrigationAction   float64 `json:"irrigationAction"`
 	Message            string  `json:"message"`
