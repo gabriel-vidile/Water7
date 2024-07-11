@@ -93,6 +93,7 @@ func saveIrrigationDataHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/api/rain-data", getRainDataHandler)
+
 	http.HandleFunc("/api/irrigation-data", saveIrrigationDataHandler)
 
 	fmt.Println("Servidor iniciado na porta 8080")
